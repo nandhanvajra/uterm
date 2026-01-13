@@ -19,28 +19,32 @@ char path[PATH_MAX];
 static struct termios saved;
 
 
-void print_cmd(char *str){
-    if (str)
-        printf( "%s\n", str);
+char* print_cmd(char *str){
+    if (str){
+        char c[1024];
+        strcpy(c,"\n");
+        strcpy(c,str);
+        return strdup(c);
+    }
+    return NULL;
 }
 
-char** get_files(char* path){
-    char** files = malloc(1000 * sizeof(char *));
+char* get_files(char* path){
+    char files[6767];
     DIR* dir = opendir(path);
     struct dirent* result;
 
     if (!dir) {
-        files[0] = NULL;
-        return files;
+        return NULL;
     }
 
     int i = 0;
     while ((result = readdir(dir)) != NULL && i < 999) {
-        files[i++] = strdup(result->d_name);
+            strcat(files, strdup(result->d_name));
+            strcat(files,"\n");
     }
-    files[i] = NULL;
     closedir(dir);
-    return files;
+    return strdup(files);
 }
 
 char* is_present(char *cmd){
@@ -48,7 +52,8 @@ char* is_present(char *cmd){
     if (!path) return NULL;
 
     char* dup_path = strdup(path);
-    char* token = strtok(dup_path, ":");
+    char* saveptr1;
+    char* token = strtok_r(dup_path, ":", &saveptr1);
 
     while (token) {
         char full[PATH_MAX];
@@ -57,24 +62,25 @@ char* is_present(char *cmd){
             free(dup_path);
             return strdup(full);
         }
-        token = strtok(NULL, ":");
+        token = strtok_r(NULL, ":", &saveptr1);
     }
 
     free(dup_path);
     return NULL;
 }
 
-void exec_cmd(char* path, char* args, char* cmd){
+char* exec_cmd(char* path, char* args, char* cmd){
     char* argv[1000];
     int i = 0;
 
     argv[i++] = cmd;
 
     if (args) {
-        char* token = strtok(args, " ");
+        char* saveptr2;
+        char* token = strtok_r(args, " ", &saveptr2);
         while (token && i < 999) {
             argv[i++] = token;
-            token = strtok(NULL, " ");
+            token = strtok_r(NULL, " ", &saveptr2);
         }
     }
     argv[i] = NULL;
@@ -96,44 +102,21 @@ void exec_cmd(char* path, char* args, char* cmd){
         int n;
         while ((n = read(fd[0], buf, sizeof(buf)-1)) > 0) {
             buf[n] = '\0';
-            printf("%s", buf);
+            return strdup(buf);
         }
         close(fd[0]);
         wait(NULL);
     }
+    return NULL;
 }
 
-char* expand_arg(char * arg){
-    static int i=0;
-    char buff[1000];
-    char* curr=&arg[i+1];
-    char* token=strtok(arg," ");
-    while(token!=NULL){
-        if(strcmp(token,">")==0){
-            strcat(buff,">67");
-            return strdup(buff);
-        }
-        if(strcmp(token,">>")==0){
-            strcat(buff,">>67");
-            return strdup(buff);
-        }
-        i++;
-        i+=strlen(token);
-        strcat(buff,strdup(token));
-        strcat(buff," ");
-        token=strtok(NULL," ");
-    }
-    return strdup(buff);
-}
 
-void show_cmd(){
+char *show_cmd(){
     char curr_dir[PATH_MAX];
     if (!getcwd(curr_dir, sizeof(curr_dir)))
-        return;
+        return NULL;
+    return get_files(curr_dir);
 
-    char **files = get_files(curr_dir);
-    for (int i = 0; files[i]; i++)
-        printf("%s\n", files[i]);
 }
 
 void change_path(char *new_path){
@@ -178,8 +161,9 @@ void write_line(char* buff){
     
 }
 
-void exec_main(char* buff){
-        disable_raw();
+
+
+char* exec_main(char* buff){
         char *first = buff;
         char *second = NULL;
 
@@ -192,9 +176,9 @@ void exec_main(char* buff){
         }
 
         if (strcmp(first, "print") == 0)
-            print_cmd(second);
+             return print_cmd(second);
         else if (strcmp(first, "show") == 0)
-            show_cmd();
+           return show_cmd();
         else if(strcmp(first,"clear")==0){
             enable_raw();
             write(STDOUT_FILENO,"\033[2J\033[H",7);
@@ -219,15 +203,68 @@ void exec_main(char* buff){
         else {
             char* full = is_present(first);
             if (full) {
-                exec_cmd(full, second, first);
+                return exec_cmd(full, second, first);
                 free(full);
             } else {
-                printf("%s : no such command\n", first);
+                char c[100];
+                sprintf(c,"%s : no such command\n", first);
+                return strdup(c);
             }
         }
 
-        enable_raw();
 
+    return NULL;
+}
+
+
+void expand_arg(char * arg){
+    // printf("in exp \n");
+    char temp_arg[1000];
+    strcpy(temp_arg,arg);
+
+    // printf("%s\n",temp_arg);
+    char buff[1000];
+    buff[0]='\0';
+    char* saveptr3;
+    char* token=strtok_r(temp_arg," ", &saveptr3);
+
+    while(token){
+
+    // printf("%s\n",token);
+        if (strcmp(token,">")==0 || strcmp(token,"1>")==0 || strcmp(token,">>")==0 || strcmp(token,"1>>")==0) {
+            // printf("im insideinside\n");
+                       int append=(strcmp(token,">")==0 || strcmp(token,"1>")==0);
+                        token=strtok_r(NULL," ", &saveptr3);
+                        // printf("%s\n",token);
+                        if (token){
+
+                            char * res=exec_main(buff);
+                            char* mode=append==1?"w":"a";
+                            FILE *f=fopen(token,mode);
+                            if(f){
+                                fprintf(f,"%s",res);
+                                // printf("success\n");
+                                fclose(f);
+                            }
+                            else{
+                                printf("wrong outpurrr\n");
+                            }
+                            free(res);
+                            buff[0]='\0';
+                        }
+                        else{
+                            printf("wrong tokerrr");
+                        }
+                        buff[0]='\0';
+                }
+        else{
+            strcat(buff,token);
+            strcat(buff," ");
+        }
+        token=strtok_r(NULL," ", &saveptr3);
+    }
+        
+    printf("%s",exec_main(buff));
 
 }
 
@@ -250,6 +287,7 @@ int main(){
         // write(STDOUT_FILENO,&c,1);
         if(c=='\n'||c=='\r'){
             // printf("pressed enter\n");
+            write(STDOUT_FILENO, "\r\n", 2);
             if(k<history_ind){
                 
                 strcpy(buff,history[k]);
@@ -259,8 +297,11 @@ int main(){
                 k++;
 
             }
-
-            exec_main(buff);
+            disable_raw();
+            // printf("%s random buff \n",buff);
+            //
+            expand_arg(buff);
+            enable_raw();
             buff[0]='\0';
 
             i=0;
@@ -311,4 +352,3 @@ int main(){
     }
     return 0;
     }
-
