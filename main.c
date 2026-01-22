@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <ncurses.h>
+#include "uthash.h"
+
 
 char* builtins[] = {"print", "show", "type"};
 char history[1000][1000];
@@ -16,6 +18,30 @@ int history_ind = -1;
 char path[PATH_MAX];
 char err[100];
 static struct termios saved;
+
+char* metaops[]={">>",">","1>>","2>","1>","2>>"};
+int metaops_ind=6;
+
+
+typedef struct{
+    char* name;
+    UT_hash_handle hh;
+}hashmap;
+hashmap *h=NULL;
+
+void hmap(){
+    for(int i=0;i<metaops_ind;i++){
+
+        hashmap* entry=malloc(sizeof(*entry));
+        if(!entry){
+            perror("malloc");
+            exit(1);
+        }
+        entry->name=strdup(metaops[i]);
+        HASH_ADD_STR(h,name,entry);
+
+    }
+}
 
 char* print_cmd(char *str){
     if (str){
@@ -220,28 +246,84 @@ char* exec_main(char* buff,char** err_val){
         }
     return NULL;
 }
+char* exec_pipe(int i, int j, char* arg_arr[], int prev_fd){
+    pid_t pids[i + 1];
+
+    for (j = 0; j <= i; j++) {
+        int fd[2];
+
+        if (j < i)
+            pipe(fd);
+
+        char* temp = strdup(arg_arr[j]);
+        char* saveptr4;
+        char* temp_args[100];
+        char* token = strtok_r(temp, " ", &saveptr4);
+
+        int k = 0;
+        while (token != NULL) {
+            temp_args[k++] = token;
+            token = strtok_r(NULL, " ", &saveptr4);
+        }
+        temp_args[k] = NULL;
+
+        pid_t x = fork();
+        if (x == 0) {
+            if (prev_fd != -1) {
+                dup2(prev_fd, STDIN_FILENO);
+                close(prev_fd);
+            }
+
+            if (j < i) {
+                dup2(fd[1], STDOUT_FILENO);
+                close(fd[0]);
+                close(fd[1]);
+            }
+
+            execvp(temp_args[0], temp_args);
+            _exit(1);
+        }
+
+        pids[j] = x;
+
+        if (prev_fd != -1)
+            close(prev_fd);
+
+        if (j < i) {
+            close(fd[1]);
+            prev_fd = fd[0];
+        }
+    }
+
+    for (j = 0; j <= i; j++)
+        waitpid(pids[j], NULL, 0);
+
+    return NULL;
+}
 
 void expand_arg(char * arg){
     // printf("in exp \n");
+
+    char* arg_arr[100];
     char temp_arg[1000];
+    int pipe_ind=0;
     strcpy(temp_arg,arg);
     // printf("%s\n",temp_arg);
     char buff[1000];
     buff[0]='\0';
     char* saveptr3;
     char* token=strtok_r(temp_arg," ", &saveptr3);
-
     while(token){
         // printf("%s\n",token);
         if (strcmp(token,">")==0 || strcmp(token,"1>")==0 || strcmp(token,">>")==0 || strcmp(token,"1>>")==0) {
             // printf("im insideinside\n");
-            int append=(strcmp(token,">")==0 || strcmp(token,"1>")==0);
+            int append=(strcmp(token,">>")==0 || strcmp(token,"1>>")==0);
             token=strtok_r(NULL," ", &saveptr3);
             // printf("%s\n",token);
             if (token){
                 char* err_val=NULL;
                 char * res=exec_main(buff,&err_val);
-                char* mode=append==1?"w":"a";
+                char* mode=append?"a":"w";
                 FILE *f=fopen(token,mode);
                 if(f){
                     if(res) fprintf(f,"%s",res);
@@ -251,15 +333,13 @@ void expand_arg(char * arg){
                     printf("%s",err_val);
                     free(err_val);
                 }
-                free(res);
+                if(res) free(res);
                 buff[0]='\0';
             }
-            buff[0]='\0';
         }
         else if (strcmp(token,"2>")==0 || strcmp(token,"2>>")==0){
             int append=(strcmp(token,"2>>")==0);
             token=strtok_r(NULL," ", &saveptr3);
-
             if (token){
                 char* err_val=NULL;
                 char * res=exec_main(buff,&err_val);
@@ -274,28 +354,57 @@ void expand_arg(char * arg){
                 if(res && strlen(res)>0){
                     printf("%s",res);
                 }
-                free(res);
+                if(res) free(res);
                 if(err_val) free(err_val);
                 buff[0]='\0';
             }
         }
-        else{
-            strcat(buff,token);
-            strcat(buff," ");
+        else if ( strcmp(token,"|")==0){
+
+            arg_arr[pipe_ind]=strdup(buff);
+            buff[0]='\0';
+            pipe_ind++;
+            
+            
+
+
         }
+        else{
+             strcat(buff,token);
+            strcat(buff," ");
+
+        }
+
         token=strtok_r(NULL," ", &saveptr3);
+        // printf("%s\n",token);
+        hashmap *curr=NULL;
+        if(token)
+        HASH_FIND_STR(h,token,curr);
+        if(token==NULL&& pipe_ind>0){
+
+            arg_arr[pipe_ind]=strdup(buff);
+            // for (int i = 0; i <= pipe_ind; i++) {
+            //     fprintf(stderr, "CMD[%d] = [%s]\n", i, arg_arr[i]);
+            // }
+                buff[0]='\0';
+                char* res=exec_pipe(pipe_ind,0,arg_arr,-1);
+                // strcpy(buff,res);
+            return;
+
+
+        }
     }
     if(strlen(buff)>0){
         char* err_val=NULL;
         char* res=exec_main(buff,&err_val);
         if(res) printf("%s",res);
         if(err_val) printf("%s",err_val);
-        free(res);
+        if(res) free(res);
         if(err_val) free(err_val);
     }
 }
-
 int main(){
+    hmap();
     setbuf(stdout,NULL);
     getcwd(path, sizeof(path));
     char buff[100];
