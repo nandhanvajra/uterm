@@ -1,4 +1,5 @@
 #include <termios.h>
+#include<fcntl.h>
 #include <stdbool.h>
 #include <libgen.h>
 #include <limits.h>
@@ -19,8 +20,49 @@ char path[PATH_MAX];
 char err[100];
 static struct termios saved;
 
-char* metaops[]={">>",">","1>>","2>","1>","2>>"};
+char* metaops[]={">>",">","1>>","2>","1>","2>>","|"};
 int metaops_ind=6;
+
+
+enum cmd_type{
+    NRML_CMD,
+    PIPE_CMD,
+    APPEND_CMD,
+    REPLACE_CMD,
+    E_APPEND_CMD,
+    E_REPLACE_CMD,
+    DEFAULT_CMD
+};
+
+typedef struct Node{
+   enum cmd_type type;
+   struct  Node* left;
+    struct Node* right;
+    char* filename;
+    char** arg;
+
+}Node;
+
+void parse_arg(Node *n);
+
+typedef struct{
+    char * cmd;
+    enum cmd_type type;
+}cmd_pairs;
+
+cmd_pairs cmd_arr[]={
+    {"|",PIPE_CMD},
+    {">",REPLACE_CMD},
+    {"1>",REPLACE_CMD},
+    {"1>",APPEND_CMD},
+    {"1>>",APPEND_CMD},
+    {"2>",E_REPLACE_CMD},
+    {"2>>",E_APPEND_CMD},
+    {"cd",DEFAULT_CMD},
+    {"print",DEFAULT_CMD},
+    {"show",DEFAULT_CMD}
+};
+
 
 
 typedef struct{
@@ -249,6 +291,7 @@ char* exec_main(char* buff,char** err_val){
 char* exec_pipe(int i, int j, char* arg_arr[], int prev_fd){
     pid_t pids[i + 1];
 
+
     for (j = 0; j <= i; j++) {
         int fd[2];
 
@@ -301,108 +344,144 @@ char* exec_pipe(int i, int j, char* arg_arr[], int prev_fd){
     return NULL;
 }
 
-void expand_arg(char * arg){
-    // printf("in exp \n");
+enum cmd_type find_type(char* key) {
+    for(int i=0;i<(sizeof(cmd_arr)/sizeof(cmd_arr[0]));i++){
+        if(strcmp(cmd_arr[i].cmd,key)==0)
+            return cmd_arr[i].type;
+    }
+    return NRML_CMD;
+}
 
-    char* arg_arr[100];
-    char temp_arg[1000];
-    int pipe_ind=0;
-    strcpy(temp_arg,arg);
-    // printf("%s\n",temp_arg);
-    char buff[1000];
-    buff[0]='\0';
-    char* saveptr3;
-    char* token=strtok_r(temp_arg," ", &saveptr3);
-    while(token){
-        // printf("%s\n",token);
-        if (strcmp(token,">")==0 || strcmp(token,"1>")==0 || strcmp(token,">>")==0 || strcmp(token,"1>>")==0) {
-            // printf("im insideinside\n");
-            int append=(strcmp(token,">>")==0 || strcmp(token,"1>>")==0);
-            token=strtok_r(NULL," ", &saveptr3);
-            // printf("%s\n",token);
-            if (token){
-                char* err_val=NULL;
-                char * res=exec_main(buff,&err_val);
-                char* mode=append?"a":"w";
-                FILE *f=fopen(token,mode);
-                if(f){
-                    if(res) fprintf(f,"%s",res);
-                    fclose(f);
-                }
-                if(err_val && strlen(err_val)>0){
-                    printf("%s",err_val);
-                    free(err_val);
-                }
-                if(res) free(res);
-                buff[0]='\0';
-            }
+
+struct Node* expand_arg(char *arg, int i, int k) {
+
+    char prev = '\0';
+    char full_cmd[100] = {0};
+    bool flag = false;
+
+    Node *n = malloc(sizeof(Node));
+
+    for (int j = i; j < k; j++) {
+        hashmap *entry = NULL;
+        char key[2] = { arg[j], '\0' };
+        HASH_FIND_STR(h, key, entry);
+
+        strcat(full_cmd, key);
+
+        if (prev == ' ' && entry) {
+            n->type  = find_type(key);
+            n->left  = expand_arg(arg, i, j);
+            n->right = expand_arg(arg, j + 1, k);
+            n->arg = NULL;
+            flag = true;
+            break;
         }
-        else if (strcmp(token,"2>")==0 || strcmp(token,"2>>")==0){
-            int append=(strcmp(token,"2>>")==0);
-            token=strtok_r(NULL," ", &saveptr3);
-            if (token){
-                char* err_val=NULL;
-                char * res=exec_main(buff,&err_val);
-                char* mode=append?"a":"w";
-                FILE *f=fopen(token,mode);
-                if(f){
-                    if(err_val && strlen(err_val)>0){
-                        fprintf(f,"%s",err_val);
-                    }
-                    fclose(f);
-                }
-                if(res && strlen(res)>0){
-                    printf("%s",res);
-                }
-                if(res) free(res);
-                if(err_val) free(err_val);
-                buff[0]='\0';
-            }
+
+        prev = arg[j];
+    }
+
+    if (!flag) {
+        n->type = NRML_CMD;
+        n->left = NULL;
+        n->right = NULL;
+
+        char *saveptr5;
+        char *token = strtok_r(full_cmd, " ", &saveptr5);
+        char **arg_s = malloc(100 * sizeof(char *));
+        int arg_ind = 0;
+        while (token) {
+            arg_s[arg_ind++] = strdup(token);
+            token = strtok_r(NULL, " ", &saveptr5);
         }
-        else if ( strcmp(token,"|")==0){
+        arg_s[arg_ind] = NULL;
+        n->arg = arg_s;
+    }
+    return n;
 
-            arg_arr[pipe_ind]=strdup(buff);
-            buff[0]='\0';
-            pipe_ind++;
-            
-            
+}
+void exec_new(Node* n){
+        execvp(n->arg[0],n->arg);
+        perror("coudnt execute command");
+        exit(1);
+}
 
+void exec_redir(Node* n){
+    if(n->type==REPLACE_CMD || n->type==E_REPLACE_CMD){
+        int fd=open(n->right->arg[0],O_WRONLY|O_CREAT|O_TRUNC,0664);
+        pid_t p=fork();
+        if(p==0){
+            if(n->type==REPLACE_CMD)
+                dup2(fd,STDOUT_FILENO);
+            else
+                dup2(fd,STDERR_FILENO);
+            exec_new(n->left);
+            close(fd);
+            exit(1);
+        }
+        wait(NULL);
+  }
+  if(n->type==APPEND_CMD || n->type==E_APPEND_CMD){
+        int fd=open(n->right->arg[0],O_WRONLY|O_CREAT|O_APPEND,0664);
+        pid_t p=fork();
+        if(p==0){
+            if(n->type==APPEND_CMD)
+                dup2(fd,STDOUT_FILENO);
+            else
+                dup2(fd,STDERR_FILENO);
+            exec_new(n->left);
+            close(fd);
+            exit(1);
+        }
+        wait(NULL);
+  }
 
+}
+
+void exec_pip(Node* n){
+    int fd[2];
+    pipe(fd);
+    pid_t left=fork();
+    if(left==0){
+        dup2(fd[0],STDOUT_FILENO);
+        close(fd[1]);
+        parse_arg(n->left);
+        close(fd[0]);
+        perror("coudnt execute this");
+        exit(0);
+    }
+    pid_t right=fork();
+    if(right==0){
+        dup2(fd[1],STDIN_FILENO);
+        close(fd[0]);
+        parse_arg(n->right);
+
+        close(fd[1]);
+        perror("COudnt execute right cmd ");
+        exit(1);
+    }
+    close(fd[0]);
+    close(fd[1]);
+    waitpid(left,NULL,0);
+    waitpid(right,NULL,0);
+}
+void parse_arg(Node *n){
+
+        if(n->type==NRML_CMD || n->type==DEFAULT_CMD){
+            exec_new(n);
+        }
+        else if(n->type==PIPE_CMD){
+            exec_pip(n);
         }
         else{
-             strcat(buff,token);
-            strcat(buff," ");
-
+            exec_redir(n);
         }
 
-        token=strtok_r(NULL," ", &saveptr3);
-        // printf("%s\n",token);
-        hashmap *curr=NULL;
-        if(token)
-        HASH_FIND_STR(h,token,curr);
-        if(token==NULL&& pipe_ind>0){
-
-            arg_arr[pipe_ind]=strdup(buff);
-            // for (int i = 0; i <= pipe_ind; i++) {
-            //     fprintf(stderr, "CMD[%d] = [%s]\n", i, arg_arr[i]);
-            // }
-                buff[0]='\0';
-                char* res=exec_pipe(pipe_ind,0,arg_arr,-1);
-                // strcpy(buff,res);
-            return;
 
 
-        }
-    }
-    if(strlen(buff)>0){
-        char* err_val=NULL;
-        char* res=exec_main(buff,&err_val);
-        if(res) printf("%s",res);
-        if(err_val) printf("%s",err_val);
-        if(res) free(res);
-        if(err_val) free(err_val);
-    }
+
+
 }
+
 int main(){
     hmap();
     setbuf(stdout,NULL);
@@ -432,7 +511,8 @@ int main(){
             disable_raw();
             // printf("%s random buff \n",buff);
             //
-            expand_arg(buff);
+            Node * n=expand_arg(buff,0,strlen(buff));
+            parse_arg(n);
             enable_raw();
             buff[0]='\0';
             i=0;
