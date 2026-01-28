@@ -20,8 +20,8 @@ char path[PATH_MAX];
 char err[100];
 static struct termios saved;
 
-char* metaops[]={">>",">","1>>","2>","1>","2>>","|"};
-int metaops_ind=6;
+char* metaops[]={"2>>","1>>",">>","2>","1>",">","|"};
+int metaops_ind=7;
 
 
 enum cmd_type{
@@ -362,24 +362,25 @@ struct Node* expand_arg(char *arg, int i, int k) {
     Node *n = malloc(sizeof(Node));
 
     for (int j = i; j < k; j++) {
-        hashmap *entry = NULL;
-        char key[2] = { arg[j], '\0' };
-        HASH_FIND_STR(h, key, entry);
+        full_cmd[strlen(full_cmd)]=arg[j];
+        for(int m=0;m<metaops_ind;m++){
+            int len=strlen(metaops[m]);
 
-        strcat(full_cmd, key);
 
-        if (prev == ' ' && entry) {
-            n->type  = find_type(key);
-            n->left  = expand_arg(arg, i, j);
-            n->right = expand_arg(arg, j + 1, k);
-            n->arg = NULL;
-            flag = true;
-            break;
-        }
+            if (j+len<=k && strncmp(&arg[j],metaops[m],len)==0) {
+                n->type  = find_type(metaops[m]);
+                n->left  = expand_arg(arg, i, j);
+                n->right = expand_arg(arg, j+len, k);
+                n->arg = NULL;
+                flag = true;
+                goto done;
+            }
 
-        prev = arg[j];
+            }
     }
 
+
+    done:
     if (!flag) {
         n->type = NRML_CMD;
         n->left = NULL;
@@ -402,7 +403,7 @@ struct Node* expand_arg(char *arg, int i, int k) {
 void exec_new(Node* n){
         execvp(n->arg[0],n->arg);
         perror("coudnt execute command");
-        exit(1);
+        // exit(1);
 }
 
 void exec_redir(Node* n){
@@ -442,21 +443,21 @@ void exec_pip(Node* n){
     pipe(fd);
     pid_t left=fork();
     if(left==0){
-        dup2(fd[0],STDOUT_FILENO);
-        close(fd[1]);
-        parse_arg(n->left);
+        dup2(fd[1],STDOUT_FILENO);
         close(fd[0]);
-        perror("coudnt execute this");
+        parse_arg(n->left);
+        close(fd[1]);
+        // perror("coudnt execute this");
         exit(0);
     }
     pid_t right=fork();
     if(right==0){
-        dup2(fd[1],STDIN_FILENO);
-        close(fd[0]);
+        dup2(fd[0],STDIN_FILENO);
+        close(fd[1]);
         parse_arg(n->right);
 
-        close(fd[1]);
-        perror("COudnt execute right cmd ");
+        close(fd[0]);
+        // perror("COudnt execute right cmd ");
         exit(1);
     }
     close(fd[0]);
@@ -465,21 +466,24 @@ void exec_pip(Node* n){
     waitpid(right,NULL,0);
 }
 void parse_arg(Node *n){
-
-        if(n->type==NRML_CMD || n->type==DEFAULT_CMD){
-            exec_new(n);
+        
+        if(n->type==NRML_CMD){
+            pid_t p=fork();
+            if(p==0){
+                exec_new(n);
+                exit(1);
+            }
+            waitpid(p,NULL,0);
         }
+        // else if(n->type==DEFAULT_CMD){
+        //     exec_main()
+        // }
         else if(n->type==PIPE_CMD){
             exec_pip(n);
         }
         else{
             exec_redir(n);
         }
-
-
-
-
-
 }
 
 int main(){
