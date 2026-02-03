@@ -1,4 +1,5 @@
 #include <termios.h>
+#include <sys/stat.h>
 #include<fcntl.h>
 #include <stdbool.h>
 #include <libgen.h>
@@ -13,7 +14,8 @@
 #include "uthash.h"
 
 
-char* builtins[] = {"print", "show", "type"};
+char* builtins[] = {"print", "show", "type","exit","cd"};
+int builtin_len=5;
 char history[1000][1000];
 int history_ind = -1;
 char path[PATH_MAX];
@@ -88,8 +90,9 @@ void hmap(){
 char* print_cmd(char *str){
     if (str){
         char c[1024];
-        strcpy(c,"\n");
-        strcpy(c,str);
+        strcat(c,"\n");
+        strcat(c,str);
+        strcat(c,"\n");
         return strdup(c);
     }
     return NULL;
@@ -249,6 +252,8 @@ char* exec_main(char* buff,char** err_val){
                 break;
             }
         }
+
+    printf("in the exec cmd file loc %s\n",buff);
         if (strcmp(first, "print") == 0)
              return print_cmd(second);
         else if (strcmp(first, "show") == 0)
@@ -382,7 +387,17 @@ struct Node* expand_arg(char *arg, int i, int k) {
 
     done:
     if (!flag) {
-        n->type = NRML_CMD;
+        bool isdef=false;
+        for(int j=0;j<builtin_len;j++){
+            if(strcmp(arg,builtins[j])==0) {
+                    isdef=true;
+                    break;
+            }
+        }
+        if(isdef)
+            n->type = DEFAULT_CMD;
+        else
+            n->type = NRML_CMD;
         n->left = NULL;
         n->right = NULL;
 
@@ -475,17 +490,100 @@ void parse_arg(Node *n){
             }
             waitpid(p,NULL,0);
         }
-        // else if(n->type==DEFAULT_CMD){
-        //     exec_main()
-        // }
-        else if(n->type==PIPE_CMD){
+       else if(n->type==PIPE_CMD){
             exec_pip(n);
+        }
+        else if(n->type==DEFAULT_CMD){
+            char temp[1024]={0};
+            char** arg=n->arg;
+            for(int i=0;arg[i]!=NULL;i++){
+                strcat(temp,arg[i]);
+                strcat(temp," ");
+            }
+            printf("%s\n",exec_main(temp,NULL));
         }
         else{
             exec_redir(n);
         }
 }
+char *find_full_cmd(char *buff, int space, int i, bool is_cmd) {
+    char temp[100];
+    int idx = 0;
 
+    int start = (space > 0) ? space + 1 : 0;
+
+for (idx = start; idx < i && buff[idx] != '\0'; idx++) {
+    temp[idx - start] = buff[idx];
+}
+temp[idx - start] = '\0';
+
+    char *res = malloc(4096);
+    if (!res) return NULL;
+    res[0] = '\0';
+
+    char *env_path = getenv("PATH");
+    if (!env_path) {
+        perror("getting error in opening the path");
+        return res;
+    }
+
+    if (is_cmd) {
+        char *temp_path = strdup(env_path);
+        char *saveptr6;
+        char *token = strtok_r(temp_path, ":", &saveptr6);
+
+        while (token) {
+            DIR *d = opendir(token);
+            if (!d) {
+                token = strtok_r(NULL, ":", &saveptr6);
+                continue;
+            }
+
+            struct dirent *entry;
+            while ((entry = readdir(d)) != NULL) {
+                char complete_path[100];
+                snprintf(complete_path, sizeof(complete_path),
+                         "%s/%s", token, entry->d_name);
+
+                struct stat st;
+                if (stat(complete_path, &st) == 0 &&
+                    S_ISREG(st.st_mode) &&
+                    access(complete_path, X_OK) == 0) {
+
+                    if (strlen(temp) <= strlen(entry->d_name) &&
+                        strncmp(temp, entry->d_name, strlen(temp)) == 0) {
+
+                        strcat(res, entry->d_name);
+                        strcat(res, "\n");
+                    }
+                }
+            }
+            closedir(d);
+            token = strtok_r(NULL, ":", &saveptr6);
+        }
+        free(temp_path);
+
+    } else {
+        DIR *d = opendir(".");
+        if (!d) {
+            perror("we couldn't open the directory");
+            return res;
+        }
+
+        struct dirent *entry;
+        while ((entry = readdir(d)) != NULL) {
+            if (strlen(temp) <= strlen(entry->d_name) &&
+                strncmp(temp, entry->d_name, strlen(temp)) == 0) {
+
+                strcat(res, entry->d_name);
+                strcat(res, "\n");
+            }
+        }
+        closedir(d);
+    }
+
+    return res;
+}
 int main(){
     hmap();
     setbuf(stdout,NULL);
@@ -493,6 +591,7 @@ int main(){
     char buff[100];
     buff[0]='\0';
     int i=0;
+    int spaces=-1;
     int hist_pos = history_ind + 1;
     
     enable_raw();
@@ -520,6 +619,7 @@ int main(){
             enable_raw();
             buff[0]='\0';
             i=0;
+            spaces=0;
         }
         else if (c==127 || c==8){
             if (i>0){
@@ -554,13 +654,50 @@ int main(){
                 }
             }
         }
+        else if(c=='\t'){
+                 char *arr = find_full_cmd(buff, spaces, i, spaces <= 0);
+
+            int count = 0;
+            for (int j = 0; arr[j] != '\0'; j++)
+                if (arr[j] == '\n')
+                    count++;
+
+            if (count == 1) {
+                char completion[100];
+                int k = 0;
+
+                for (int j = 0; arr[j] != '\0' && arr[j] != '\n'; j++)
+                    completion[k++] = arr[j];
+                completion[k] = '\0';
+
+                int start = (spaces > 0) ? spaces + 1 : 0;
+                buff[start] = '\0';
+                strcat(buff, completion);
+                i = strlen(buff);
+            }
+            else if (count > 1) {
+                disable_raw();
+                write(STDOUT_FILENO, "\n", 1);
+                printf("%s", arr);
+                enable_raw();
+            }
+
+            free(arr);
+
+                   
+        }
         else{
              buff[i]=c;
+             if(c==' '){
+                 spaces=i;
+             }
              buff[i+1]='\0';
              i++;
         }
          write_line(buff);
-    }
+
+         
+        }
     return 0;
 }
 
