@@ -236,10 +236,9 @@ void clear_line(){
     write(STDOUT_FILENO,"\r\033[2K",5);
 }
 
-void write_line(char* buff,char* prompt){
+void write_line(char* buff){
     // printf("in the writeline buff \n");
     clear_line();
-    write(STDOUT_FILENO,prompt,strlen(prompt));
     write(STDOUT_FILENO,buff,strlen(buff));
 }
 
@@ -589,63 +588,52 @@ int main(){
     hmap();
     setbuf(stdout,NULL);
     getcwd(path, sizeof(path));
-
     char buff[100];
     buff[0]='\0';
-
     int i=0;
     int spaces=-1;
     int hist_pos = history_ind + 1;
-
-    char prompt[PATH_MAX + 4];
-    char cwd[100];
-
-    getcwd(cwd,sizeof(cwd));
-    prompt[0]='\0';
-    strcat(prompt,cwd);
-    strcat(prompt,"$ ");
-
-    write_line(buff,prompt);
-
+    
     enable_raw();
     while(1){
         unsigned char c;
-        if(read(STDIN_FILENO,&c,1)!=1)
+        if(read(STDIN_FILENO,&c,1)!=1){
             continue;
-
+        }
+        //echoing and redrawing is not gud
+        // write(STDOUT_FILENO,&c,1);
         if(c=='\n'||c=='\r'){
+            // printf("pressed enter\n");
             write(STDOUT_FILENO, "\r\n", 2);
 
-            if(strlen(buff)>0)
+            if(strlen(buff)>0){
                 strcpy(history[++history_ind],buff);
-
+            }
             hist_pos = history_ind + 1;
 
             disable_raw();
-            Node *n = expand_arg(buff,0,strlen(buff));
+            // printf("%s random buff \n",buff);
+            //
+            Node * n=expand_arg(buff,0,strlen(buff));
             parse_arg(n);
             enable_raw();
-
             buff[0]='\0';
             i=0;
-            spaces=-1;
-
-            getcwd(cwd,sizeof(cwd));
-            prompt[0]='\0';
-            strcat(prompt,cwd);
-            strcat(prompt,"$ ");
+            spaces=0;
         }
         else if (c==127 || c==8){
             if (i>0){
                 i--;
+                // write(STDOUT_FILENO,"\b \b",3);
                 buff[i]='\0';
             }
         }
         else if(c==27){
+            // write_line("in the up ir down");
             unsigned char s[2];
-            if(read(STDIN_FILENO,&s[0],1)!=1) continue;
-            if(read(STDIN_FILENO,&s[1],1)!=1) continue;
-
+            if((read(STDIN_FILENO,&s[0],1))!=1) continue;
+            if((read(STDIN_FILENO,&s[1],1))!=1) continue;
+            // write_line("in the up ir down");
             if (s[0]=='['){
                 if(s[1]=='A'){
                     if(hist_pos > 0){
@@ -653,7 +641,7 @@ int main(){
                         i=strlen(buff);
                     }
                 }
-                else if(s[1]=='B'){
+                if(s[1]=='B'){
                     if(hist_pos < history_ind){
                         strcpy(buff,history[++hist_pos]);
                         i=strlen(buff);
@@ -667,7 +655,7 @@ int main(){
             }
         }
         else if(c=='\t'){
-            char *arr = find_full_cmd(buff, spaces, i, spaces <= 0);
+                 char *arr = find_full_cmd(buff, spaces, i, spaces <= 0);
 
             int count = 0;
             for (int j = 0; arr[j] != '\0'; j++)
@@ -695,18 +683,21 @@ int main(){
             }
 
             free(arr);
+
+                   
         }
         else{
-            buff[i] = c;
-            if(c == ' ')
-                spaces = i;
-            buff[i+1] = '\0';
-            i++;
+             buff[i]=c;
+             if(c==' '){
+                 spaces=i;
+             }
+             buff[i+1]='\0';
+             i++;
         }
+         write_line(buff);
 
-        write_line(buff,prompt);
-    }
-
+         
+        }
     return 0;
 }
 
